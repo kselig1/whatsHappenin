@@ -10,3 +10,15 @@ services:
     restart: unless-stopped
     volumes:
       - ./src/chatbot_ui:/app/src/chatbot_ui
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.fastapi
+    ports:
+      - 8000:8000
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./src/api:/app/src/api

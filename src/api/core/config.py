@@ -7,6 +7,4 @@ class Config(BaseSettings):
 
     model_config = SettingsConfigDict(env_file = ".env")
 
-    API_URL: str = "http://api:8000"
-
 config = Config()
