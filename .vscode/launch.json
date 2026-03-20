@@ -1,0 +1,46 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "FastAPI (uvicorn, local)",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "uvicorn",
+        "args": [
+          "src.api.app:app",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8000",
+          "--reload"
+        ],
+        "cwd": "${workspaceFolder}",
+        "console": "integratedTerminal",
+        "justMyCode": true
+      },
+      {
+        "name": "Streamlit UI (local)",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "streamlit",
+        "args": [
+          "run",
+          "src/chatbot_ui/app.py",
+          "--server.port",
+          "8501"
+        ],
+        "cwd": "${workspaceFolder}",
+        "console": "integratedTerminal",
+        "justMyCode": true
+      }
+    ],
+    "compounds": [
+      {
+        "name": "Debug Both (FastAPI + Streamlit)",
+        "configurations": [
+          "FastAPI (uvicorn, local)",
+          "Streamlit UI (local)"
+        ]
+      }
+    ]
+  }

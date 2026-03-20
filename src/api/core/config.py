@@ -5,8 +5,6 @@ class Config(BaseSettings):
     GROQ_API_KEY: str   
     GOOGLE_API_KEY: str  
 
-    model_config = SettingsConfigDict(env_file = ".env")
-
-    API_URL: str = "http://api:8000"
+    model_config = SettingsConfigDict(env_file = ".env", extra="ignore")
 
 config = Config()
