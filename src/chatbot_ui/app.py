@@ -5,17 +5,20 @@ from core.config import config
 
 # Create a sidebar with a dropdown for the model list and providers
 with st.sidebar:
-    st.title("Settings")
+    st.title("Event Finder")
 
-    # Dropdown for model provider
-    provider = st.selectbox("Provider", ["OpenAI", "Groq", "Google"])
+    tab_settings, tab_advanced = st.tabs(["Settings", "Saved Items"])
 
-    if provider == "OpenAI":
-        model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"])
-    elif provider == "Groq":
-        model_name = st.selectbox("Model", ["llama-3.3-70b-versatile"])
-    else:
-        model_name = st.selectbox("Model", ["gemini-2.0-flash"])
+    with tab_settings:
+        # Dropdown for model provider
+        provider = st.selectbox("Provider", ["OpenAI", "Groq", "Google"])
+
+        if provider == "OpenAI":
+            model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"])
+        elif provider == "Groq":
+            model_name = st.selectbox("Model", ["llama-3.3-70b-versatile"])
+        else:
+            model_name = st.selectbox("Model", ["gemini-2.0-flash"])
 
     # Save provider and model to session state
     st.session_state.provider = provider
