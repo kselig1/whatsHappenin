@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from hashlib import sha1
 from dataclasses import asdict, dataclass
 from html import unescape
 from pathlib import Path
@@ -19,6 +20,7 @@ from urllib.request import Request, urlopen
 
 USER_AGENT = "WhatsHappeninEventBot/0.1 (+https://example.local)"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+EVENTS_JSONL = DATA_DIR / "events.jsonl"
 
 
 @dataclass
@@ -256,40 +258,67 @@ def scrape_event_to_json(url: str) -> dict:
 
     event = parse_parentmap_event(url)
     result["event"] = asdict(event)
+    event_payload = result["event"]
+    event_payload["event_id"] = build_event_id(url)
+    event_payload["occurrence_ids"] = build_occurrence_ids(
+        event_payload["event_id"],
+        event.schedule,
+        event.date_range,
+    )
     return result
 
 
-def _safe_filename_from_url(url: str) -> str:
+def _canonical_event_key(url: str) -> str:
     parsed = urlparse(url)
-    slug = parsed.path.strip("/").replace("/", "_")
-    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug).strip("-")
-    if not slug:
-        slug = "event"
-    return f"{slug}.json"
+    host = parsed.netloc.lower().strip()
+    path = parsed.path.strip().lower().rstrip("/")
+    if not path:
+        path = "/"
+    return f"{host}{path}"
 
 
-def write_payload_to_data(payload: dict, filename: str | None = None) -> Path:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    out_name = filename or _safe_filename_from_url(payload.get("url", "event"))
-    if not out_name.endswith(".json"):
-        out_name = f"{out_name}.json"
-    output_path = DATA_DIR / out_name
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+def build_event_id(url: str, source_prefix: str = "parentmap") -> str:
+    canonical_key = _canonical_event_key(url)
+    digest = sha1(canonical_key.encode("utf-8")).hexdigest()
+    return f"{source_prefix}_{digest}"
+
+
+def _normalize_occurrence_value(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"\s+", " ", value)
+    return value
+
+
+def build_occurrence_ids(event_id: str, schedule: list[str], date_range: str | None = None) -> list[str]:
+    seeds = schedule if schedule else ([date_range] if date_range else [])
+    occurrence_ids: list[str] = []
+    for seed in seeds:
+        if not seed:
+            continue
+        normalized = _normalize_occurrence_value(seed)
+        digest = sha1(f"{event_id}|{normalized}".encode("utf-8")).hexdigest()
+        occurrence_ids.append(f"{event_id}_occ_{digest[:16]}")
+    return occurrence_ids
+
+
+def write_payload_to_jsonl(payload: dict, output_path: Path = EVENTS_JSONL) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return output_path
 
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print('Usage: python -m utils.eventData "<event-url>" [output_filename.json]')
+        print('Usage: python -m utils.eventData "<event-url>"')
         return 1
 
     url = sys.argv[1].strip()
-    output_filename = sys.argv[2].strip() if len(sys.argv) > 2 else None
     try:
         payload = scrape_event_to_json(url)
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-        output_path = write_payload_to_data(payload, output_filename)
-        print(f"\nSaved JSON to: {output_path}")
+        output_path = write_payload_to_jsonl(payload)
+        print(f"\nAppended JSONL record to: {output_path}")
         return 0
     except (HTTPError, URLError, ValueError) as exc:
         print(json.dumps({"url": url, "error": str(exc)}, indent=2))
