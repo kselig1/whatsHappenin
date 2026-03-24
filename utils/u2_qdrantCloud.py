@@ -70,13 +70,28 @@ qdrant_client.create_payload_index(
 df_items = pd.read_json("data/events.jsonl", lines=True)
 
 def preprocess_description(row):
-    return f"{row['title']} {' '.join(row['description'])}"
+    return f"{row['event']['title']} {' '.join(row['event']['description'])}"
 
 df_items["description"] = df_items.apply(preprocess_description, axis=1)
 
-df_sample = df_items.sample(500, random_state=42)
+# df_sample = df_items.sample(500, random_state=42)
+df_sample = df_items.sample(1, random_state=42)
 
-data_to_embed = df_sample[["description", "date_range", "schedule", "price", "recommended_ages", "venue", "address", "event_id", "occurence_ids"]].to_dict(orient="records")
+data_to_embed = (
+    df_sample["event"]
+    .apply(lambda e: {
+        "description": (e or {}).get("description"),
+        "date_range": (e or {}).get("date_range"),
+        "schedule": (e or {}).get("schedule"),
+        "price": (e or {}).get("price"),
+        "recommended_ages": (e or {}).get("recommended_ages"),
+        "venue": (e or {}).get("venue"),
+        "address": (e or {}).get("address"),
+        "event_id": (e or {}).get("event_id"),
+        "occurrence_ids": (e or {}).get("occurrence_ids"),
+    })
+    .tolist()
+)
 
 text_to_embed = [data["description"] for data in data_to_embed]
 
