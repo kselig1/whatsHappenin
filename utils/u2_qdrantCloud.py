@@ -54,25 +54,45 @@ qdrant_client = QdrantClient(
 )
 
 # Create Qdrant Collection for Hybrid Search
-qdrant_client.create_collection( 
-    collection_name="Event-items-collection-01-hybrid-search",
-    vectors_config={"text-embedding-3-small": VectorParams(size=1536, distance=Distance.COSINE)}, 
-    sparse_vectors_config={"bm25": SparseVectorParams(modifier=models.Modifier.IDF)}
-)
+COLLECTION = "Event-items-collection-01-hybrid-search"
+if not qdrant_client.collection_exists(collection_name=COLLECTION):
 
-qdrant_client.create_payload_index(  
-    collection_name="Event-items-collection-01-hybrid-search",   
-    field_name="event_id", 
-    field_schema=PayloadSchemaType.KEYWORD, 
-)
+    qdrant_client.create_collection( 
+        collection_name=COLLECTION,
+        vectors_config={"text-embedding-3-small": VectorParams(size=1536, distance=Distance.COSINE)}, 
+        sparse_vectors_config={"bm25": SparseVectorParams(modifier=models.Modifier.IDF)}
+    )
+
+    qdrant_client.create_payload_index(  
+        collection_name=COLLECTION,   
+        field_name="event_id", 
+        field_schema=PayloadSchemaType.KEYWORD, 
+    )
 
 # Process and Embed Amazon Items Data
 df_items = pd.read_json("data/events.jsonl", lines=True)
 
-def preprocess_description(row):
-    return f"{row['event']['title']} {' '.join(row['event']['description'])}"
+def _description_for_embed(ev: dict) -> str:
+    """Title + body for embedding; supports str or list descriptions."""
+    if not ev:
+        return ""
+    title = (ev.get("title") or "").strip()
+    raw = ev.get("description")
+    if raw is None:
+        body = ""
+    elif isinstance(raw, list):
+        body = " ".join(str(x) for x in raw)
+    else:
+        body = str(raw).strip()
+    return f"{title} {body}".strip()
 
-df_items["description"] = df_items.apply(preprocess_description, axis=1)
+
+def _event_with_embed_text(row):
+    ev = row["event"] or {}
+    return {**ev, "description": _description_for_embed(ev)}
+
+
+df_items["event"] = df_items.apply(_event_with_embed_text, axis=1)
 
 # df_sample = df_items.sample(500, random_state=42)
 df_sample = df_items.sample(1, random_state=42)
