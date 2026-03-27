@@ -94,8 +94,8 @@ def _event_with_embed_text(row):
 
 df_items["event"] = df_items.apply(_event_with_embed_text, axis=1)
 
-# df_sample = df_items.sample(500, random_state=42)
-df_sample = df_items.sample(1, random_state=42)
+# df_sample = df_items.sample(60, random_state=42)
+df_sample = df_items
 
 data_to_embed = (
     df_sample["event"]

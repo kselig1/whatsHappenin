@@ -1,14 +1,18 @@
 """ParentMap event scraper with robots.txt checks.
 
 Usage:
-    python -m utils.eventData "https://www.parentmap.com/calendar/..."
+    python -m utils.u1_eventData "https://www.parentmap.com/calendar/..."
+    python -m utils.u1_eventData --calendar-url "https://www.parentmap.com/calendar" --pages 3 --delay 1.5
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
+import time
+from http.client import IncompleteRead
 from hashlib import sha1
 from dataclasses import asdict, dataclass
 from html import unescape
@@ -21,6 +25,10 @@ from urllib.request import Request, urlopen
 USER_AGENT = "WhatsHappeninEventBot/0.1 (+https://example.local)"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 EVENTS_JSONL = DATA_DIR / "events.jsonl"
+PARENTMAP_ROOT = "https://www.parentmap.com"
+
+# One robots.txt fetch per origin per process; can_fetch() is then cheap (no I/O).
+_robots_parsers: dict[str, robotparser.RobotFileParser] = {}
 
 
 @dataclass
@@ -38,19 +46,47 @@ class EventData:
     source_url: str | None
 
 
-def _get_html(url: str, timeout: int = 20) -> str:
-    request = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=timeout) as response:
-        charset = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(charset, errors="replace")
+def _get_html(url: str, timeout: int = 20, max_attempts: int = 3) -> str:
+    """GET HTML with retries for truncated responses and transient network errors."""
+    for attempt in range(max_attempts):
+        try:
+            request = Request(url, headers={"User-Agent": USER_AGENT})
+            with urlopen(request, timeout=timeout) as response:
+                charset = response.headers.get_content_charset() or "utf-8"
+                return response.read().decode(charset, errors="replace")
+        except HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
+                time.sleep(min(2**attempt, 8.0))
+                continue
+            raise
+        except (IncompleteRead, URLError, TimeoutError, ConnectionError) as e:
+            if attempt < max_attempts - 1:
+                time.sleep(min(2**attempt, 8.0))
+                continue
+            raise
+
+
+def _robots_cache_key(parsed) -> str:
+    scheme = (parsed.scheme or "https").lower()
+    netloc = (parsed.netloc or "").lower()
+    return f"{scheme}://{netloc}"
+
+
+def _get_robots_parser(parsed) -> robotparser.RobotFileParser:
+    key = _robots_cache_key(parsed)
+    if key not in _robots_parsers:
+        rp = robotparser.RobotFileParser()
+        scheme = parsed.scheme or "https"
+        netloc = parsed.netloc
+        rp.set_url(f"{scheme}://{netloc}/robots.txt")
+        rp.read()
+        _robots_parsers[key] = rp
+    return _robots_parsers[key]
 
 
 def is_allowed_by_robots(url: str, user_agent: str = USER_AGENT) -> bool:
     parsed = urlparse(url)
-    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    rp = robotparser.RobotFileParser()
-    rp.set_url(robots_url)
-    rp.read()
+    rp = _get_robots_parser(parsed)
     return rp.can_fetch(user_agent, url)
 
 
@@ -79,6 +115,47 @@ def _all_matches(pattern: str, text: str, flags: int = 0) -> list[str]:
 def _get_section(pattern: str, text: str, flags: int = 0) -> str | None:
     match = re.search(pattern, text, flags)
     return match.group(1) if match else None
+
+
+def extract_event_urls_from_calendar_html(html: str, base_url: str = PARENTMAP_ROOT) -> list[str]:
+    raw_paths = re.findall(r'href=["\'](/calendar/[^"\'?#]+)["\']', html, flags=re.IGNORECASE)
+    seen: set[str] = set()
+    event_urls: list[str] = []
+    for path in raw_paths:
+        if path.lower() == "/calendar":
+            continue
+        full_url = urljoin(base_url, path)
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+        event_urls.append(full_url)
+    return event_urls
+
+
+def discover_calendar_event_urls(
+    calendar_url: str, pages: int = 1, delay_seconds: float = 1.0
+) -> tuple[list[str], list[str]]:
+    """Return (deduped event detail URLs, listing page URLs fetched in order)."""
+    seen: set[str] = set()
+    all_event_urls: list[str] = []
+    listing_pages_pulled: list[str] = []
+    for page_idx in range(max(1, pages)):
+        if page_idx == 0:
+            page_url = calendar_url
+        else:
+            separator = "&" if "?" in calendar_url else "?"
+            page_url = f"{calendar_url}{separator}page={page_idx}"
+        listing_pages_pulled.append(page_url)
+        html = _get_html(page_url)
+        event_urls = extract_event_urls_from_calendar_html(html, base_url=calendar_url)
+        for event_url in event_urls:
+            if event_url in seen:
+                continue
+            seen.add(event_url)
+            all_event_urls.append(event_url)
+        if delay_seconds > 0 and page_idx < pages - 1:
+            time.sleep(delay_seconds)
+    return all_event_urls, listing_pages_pulled
 
 
 def parse_parentmap_event(url: str) -> EventData:
@@ -308,20 +385,118 @@ def write_payload_to_jsonl(payload: dict, output_path: Path = EVENTS_JSONL) -> P
     return output_path
 
 
+def _load_existing_urls(output_path: Path) -> set[str]:
+    if not output_path.exists():
+        return set()
+    seen_urls: set[str] = set()
+    with output_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            url = record.get("url")
+            if isinstance(url, str) and url:
+                seen_urls.add(url)
+    return seen_urls
+
+
+def scrape_calendar_to_jsonl(
+    calendar_url: str,
+    pages: int = 1,
+    output_path: Path = EVENTS_JSONL,
+    delay_seconds: float = 1.0,
+) -> dict:
+    event_urls, listing_pages_pulled = discover_calendar_event_urls(
+        calendar_url, pages=pages, delay_seconds=delay_seconds
+    )
+    existing_urls = _load_existing_urls(output_path)
+
+    scraped = 0
+    skipped_existing = 0
+    failed = 0
+
+    for idx, event_url in enumerate(event_urls, start=1):
+        if event_url in existing_urls:
+            skipped_existing += 1
+            continue
+        try:
+            payload = scrape_event_to_json(event_url)
+            write_payload_to_jsonl(payload, output_path=output_path)
+            existing_urls.add(event_url)
+            scraped += 1
+            print(f"[{idx}/{len(event_urls)}] Scraped {event_url}")
+        except (HTTPError, URLError, ValueError) as exc:
+            failed += 1
+            print(f"[{idx}/{len(event_urls)}] Failed {event_url}: {exc}")
+        if delay_seconds > 0 and idx < len(event_urls):
+            time.sleep(delay_seconds)
+
+    return {
+        "calendar_url": calendar_url,
+        "pages": pages,
+        "listing_pages_pulled": listing_pages_pulled,
+        "discovered_event_urls": len(event_urls),
+        "scraped": scraped,
+        "skipped_existing": skipped_existing,
+        "failed": failed,
+        "output_path": str(output_path),
+    }
+
+
 def main() -> int:
-    if len(sys.argv) < 2:
-        print('Usage: python -m utils.eventData "<event-url>"')
+    parser = argparse.ArgumentParser(description="Scrape ParentMap event pages into JSONL.")
+    parser.add_argument("event_url", nargs="?", help="Single ParentMap event URL to scrape.")
+    parser.add_argument(
+        "--calendar-url",
+        help="ParentMap calendar listing URL (for example: https://www.parentmap.com/calendar).",
+    )
+    parser.add_argument(
+        "--pages",
+        type=int,
+        default=1,
+        help="Number of calendar pages to crawl when --calendar-url is provided.",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=1.0,
+        help="Delay in seconds between requests to avoid overwhelming the site.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=EVENTS_JSONL,
+        help="JSONL output path.",
+    )
+    args = parser.parse_args()
+
+    if not args.event_url and not args.calendar_url:
+        parser.print_help()
         return 1
 
-    url = sys.argv[1].strip()
     try:
-        payload = scrape_event_to_json(url)
+        if args.calendar_url:
+            summary = scrape_calendar_to_jsonl(
+                args.calendar_url.strip(),
+                pages=max(1, args.pages),
+                output_path=args.output,
+                delay_seconds=max(0.0, args.delay),
+            )
+            print(json.dumps(summary, indent=2, ensure_ascii=False))
+            return 0
+
+        payload = scrape_event_to_json(args.event_url.strip())
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-        output_path = write_payload_to_jsonl(payload)
+        output_path = write_payload_to_jsonl(payload, output_path=args.output)
         print(f"\nAppended JSONL record to: {output_path}")
         return 0
     except (HTTPError, URLError, ValueError) as exc:
-        print(json.dumps({"url": url, "error": str(exc)}, indent=2))
+        error_url = args.calendar_url or args.event_url
+        print(json.dumps({"url": error_url, "error": str(exc)}, indent=2))
         return 2
 
 
