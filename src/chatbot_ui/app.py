@@ -3,27 +3,6 @@ import requests
 
 from core.config import config
 
-# Create a sidebar with a dropdown for the model list and providers
-with st.sidebar:
-    st.title("Event Finder")
-
-    tab_settings, tab_advanced = st.tabs(["Settings", "Saved Items"])
-
-    with tab_settings:
-        # Dropdown for model provider
-        provider = st.selectbox("Provider", ["OpenAI", "Groq", "Google"])
-
-        if provider == "OpenAI":
-            model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"])
-        elif provider == "Groq":
-            model_name = st.selectbox("Model", ["llama-3.3-70b-versatile"])
-        else:
-            model_name = st.selectbox("Model", ["gemini-2.0-flash"])
-
-    # Save provider and model to session state
-    st.session_state.provider = provider
-    st.session_state.model_name = model_name
-
 def api_call(method, url, **kwargs):
 
     def _show_error_popup(message):
@@ -69,8 +48,12 @@ if prompt := st.chat_input("Hello! How can I assist you today?"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        output = api_call("post", f"{config.API_URL}/chat", json={"provider": st.session_state.provider, "model_name": st.session_state.model_name, "messages": st.session_state.messages})
-        response_data = output[1]
-        answer = response_data["message"]
+        success, response_data = api_call("post", f"{config.API_URL}/rag", json={"query": prompt})
+
+        if success and "answer" in response_data:
+            answer = response_data["answer"]
+        else:
+            answer = response_data.get("message") or response_data.get("detail") or str(response_data)
+
         st.write(answer)
     st.session_state.messages.append({"role": "assistant", "content": answer})
